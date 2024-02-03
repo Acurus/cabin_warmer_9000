@@ -1,32 +1,41 @@
 #include <SoftwareSerial.h>
 #include "secrets.h"
-SoftwareSerial sim800lSerial(3, 1);  // RX, TX
+SoftwareSerial SIM7670Serial(5, 4);  // RX, TX
 
 const int ledPin = D2;  // Change this to the pin where your LED is connectedc:\Users\jtkyr\development\Arduino\cabin_warmer_9000\.gitignore
 
-bool sendATCommand(const String& command, const String& expectedResponse = "OK") {
-  Serial.print("sending command: ");
-  Serial.println(command);
-  sim800lSerial.println(command);
-  return checkResponse(expectedResponse);
-}
-
-bool checkResponse(const String& expectedReponse) {
+bool sendATCommand(const char* cmd, const char* expectedResponse, unsigned long timeout) {
+  Serial.print("Sending: ");
+  Serial.print(cmd);
+  Serial.println("...");
+  SIM7670Serial.println(cmd);
+  String response = "";
   unsigned long startTime = millis();
-  unsigned long timeout = 1000;
+  bool responseOK = false;
+
   while (millis() - startTime < timeout) {
-    if (sim800lSerial.available()) {
-      String response = sim800lSerial.readString();
+    while (SIM7670Serial.available() > 0) {
+      char c = SIM7670Serial.read();
+      response += c;
+    }
+
+    if (response.indexOf(expectedResponse) != -1) {
+      responseOK = true;
       Serial.println(response);
-      if (response.equals(expectedReponse)) {
-        return true;
-      } else {
-        return false;
-      }
+      break;  // found it
     }
   }
-  return false;
+
+  Serial.print("Response was: ");
+  Serial.println(response);
+
+  if (responseOK)
+    Serial.println("Response OK");
+  else
+    Serial.println("Timeout without expected Response");
+  return responseOK;
 }
+
 
 bool processSms(const String& smsContent) {
   int start_number = smsContent.indexOf("+CMT: \"") + 7;
@@ -39,6 +48,7 @@ bool processSms(const String& smsContent) {
   if (phoneNumberIsApproved(phoneNumber)) {
     Serial.print("Received SMS from: " + phoneNumber);
     Serial.println(" - " + messageText);
+    return true;
   }
   return false;
 }
@@ -53,39 +63,41 @@ bool phoneNumberIsApproved(const String& phoneNumber) {
   return false;
 }
 
-void sendSMS(const String& phoneNumber, const String& messageText) {
-  if (sendATCommand("AT+CMGF=1;")) {
-    if (sendATCommand("AT+CMGS=\"" + phoneNumber + "\"\r", ">")) {
-      sim800lSerial.print(messageText);
-      sim800lSerial.write(0x1A);  // Send CTRL+Z character to end message
-      if (checkResponse("+CMGS:")) {
-        Serial.println("SMS sent successfully");
-        return;
-      }
-    }
-  }
-  Serial.println("Error: Failed to send SMS");
+void sendSMS(String number, String message) {
+  String cmd = "AT+CMGS=\"" + number + "\"\r\n";
+  SIM7670Serial.print(cmd);
+  delay(100);
+  SIM7670Serial.println(message);
+  delay(100);
+  SIM7670Serial.write(0x1A);  // send ctrl-z
+  delay(100);
 }
 
 void setup() {
-  sim800lSerial.begin(9600);
-  Serial.begin(19200);
+  SIM7670Serial.begin(115200);
+  Serial.begin(115200);
 
   pinMode(ledPin, OUTPUT);
+  sendATCommand("ATE0", "OK",1000);
+  bool boardIsUp = sendATCommand("AT", "OK", 1000);
+  while (!boardIsUp) {
+    delay(500);
+    Serial.println("Retrying..");
+    boardIsUp = sendATCommand("AT", "OK", 1000);
+  }
 
-  Serial.println("Initialzing...");
-  Serial.println(sendATCommand("AT"));  // Check if board is up
-  delay(1000);
-  Serial.println(sendATCommand("AT+CMGF=1"));  // Set SMS mode to text
-  delay(1000);
-  Serial.println(sendATCommand("AT+CNMI=2,2,0,0,0"));  // Enable receiving SMS notifications
-  delay(1000);
+  sendATCommand("AT+CMGF=1", "OK", 1000);          // set SMS format to text
+  sendATCommand("AT+CNMI=2,2,0,0,0", "OK", 1000);  // Enable receiving SMS notifications
   Serial.println("Setup complete.");
+
+  sendSMS("+4797140645", "Hello from Arduino!");
 }
 
 void loop() {
-  if (sim800lSerial.available() > 0) {
-    String response = sim800lSerial.readString();
+  delay(1000);
+  if (SIM7670Serial.available()) {
+    String response = SIM7670Serial.readString();
+    Serial.println(response);
     if (response.indexOf("+CMT:") != -1) {
       processSms(response);
     }
